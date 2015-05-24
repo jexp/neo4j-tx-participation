@@ -1,0 +1,68 @@
+== Transaction-Participation for Neo4j-REST-API
+
+This is a Neo4j Server Extension to make http://neo4j.com/docs/stable/rest-api.html[Neo4j REST-API] participate in transactions started by the http://neo4j.com/docs/stable/rest-api-transactional.html#rest-api-begin-a-transaction[transactional Cypher endpoint].
+
+=== Why do I need it?
+
+There are a number of operations with Neo4j server that currently can't be done with Cypher but are exposed as REST-API endpoints.
+
+Notably working with http://neo4j.com/docs/stable/rest-api-indexes.html[manual indexes], http://neo4j.com/docs/stable/rest-api-traverse.html[traversals] and http://neo4j.com/docs/stable/rest-api-graph-algos.html[graph algorithms].
+
+As the Cypher endpoint starts it's own transactions, all the data created during those transactions *is not visible* to the outside until that transaction is committed.
+So you can't create a node and add it to a manual fulltext or spatial index within the same transaction.
+
+This extension makes it possible for other REST-operations to participate in transactions started by the cypher endpoint.
+
+=== Installation
+
+You can build it with `mvn package` and copy `target/transaction-participation-2.2.2-1.0-SNAPSHOT.jar` to your server's `plugins` directory.
+
+A pre-built version is https://dl.dropboxusercontent.com/u/14493611/transaction-participation-2.2.2-1.0-SNAPSHOT.jar[here].
+
+And edit `conf/neo4j-server.properties` to contain this registration for the extension:
+----
+org.neo4j.server.thirdparty_jaxrs_classes=org.neo4j.server.extension.tx=/tx
+----
+
+Then restart your server.
+
+=== How does it work?
+
+The extension installs a filter that intercepts the http request to the REST API takes the *transaction id from the `X-TxId` HTTP Header*
+and resumes the transaction, so that the REST-API calls participates in that transaction.
+
+After executing the request it suspends the transaction again, so that you can continue it with the Cypher endpoint and also committing it at the end.
+
+Here is a sample session with explanations:
+----
+# open transaction, create node
+curl -i -H accept:application/json -H content-type:application/json \
+     -d '{"statements":[{"statement":"create (p:Person {name:\"Jack\"}) return id(p)"}]}' \
+     http://localhost:7474/db/data/transaction
+
+# response, see the transaction-id "6" and the returned node-id of "1" (nested in "data":[{"row":[1]}]}])
+HTTP/1.1 201 Created
+Location: http://localhost:7474/db/data/transaction/6
+{"commit":"http://localhost:7474/db/data/transaction/6/commit",
+ "results":[{"columns":["id(p)"],"data":[{"row":[1]}]}],
+ "transaction":{"expires":"Sun, 24 May 2015 08:43:11 +0000"},
+ "errors":[]}
+
+curl -H X-TxId:6 \
+     -i -H accept:application/json -H content-type:application/json \
+     -d'{"key":"bio","value":"Jack was born in London in 1925","uri":"/db/data/node/1"}' \
+     http://localhost:7474/db/data/index/node/people
+
+# response, added to index
+
+HTTP/1.1 201 Created
+{  ...
+   "indexed" : "http://localhost:7474/db/data/index/node/people/bio/Jack%20was%20born%20in%20London%20in%201925/1"
+}
+
+# commit transaction number 6
+curl  -i -XPOST \
+      http://localhost:7474/transaction/6
+----
+
+
